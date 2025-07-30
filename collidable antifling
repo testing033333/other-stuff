@@ -1,0 +1,124 @@
+	local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+
+local character = nil
+local humanoidRootPart = nil
+
+-- Configurable
+local FLING_SPEED_THRESHOLD = 150
+local FLINGER_DISTANCE = 5
+local FLING_POSITION_DELTA = 666 -- how far is "too far" for a snap
+local FLING_VELOCITY_DELTA = 150 -- sudden local velocity
+local SAFE_POSITION_SAVE_INTERVAL = 5 -- seconds
+local TELEPORT_BACK_COOLDOWN = 1 -- prevent re-teleporting too fast
+
+local lastSafePosition = nil
+local lastSafeTime = 0
+local lastTeleportTime = 0
+local flingerList = {}
+
+-- Save position if not flying/flinging
+local function updateSafePosition()
+	if humanoidRootPart then
+		local velocity = humanoidRootPart.AssemblyLinearVelocity
+		if velocity.Magnitude < 30 then
+			lastSafePosition = humanoidRootPart.Position
+			lastSafeTime = tick()
+		end
+	end
+end
+
+-- Snap/fling detection for local player
+local function checkSelfFling()
+	if not humanoidRootPart or not lastSafePosition then return end
+
+	local now = tick()
+	local deltaPos = (humanoidRootPart.Position - lastSafePosition).Magnitude
+	local speed = humanoidRootPart.AssemblyLinearVelocity.Magnitude
+
+	if (deltaPos > FLING_POSITION_DELTA or speed > FLING_VELOCITY_DELTA) and (now - lastTeleportTime > TELEPORT_BACK_COOLDOWN) then
+		-- Emergency break
+		humanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+		humanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+
+		-- Snap back to safety
+		humanoidRootPart.CFrame = CFrame.new(lastSafePosition)
+		lastTeleportTime = now
+
+		-- Notify who might've caused it
+		for _, player in ipairs(Players:GetPlayers()) do
+			if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+				local otherHRP = player.Character.HumanoidRootPart
+				local dist = (humanoidRootPart.Position - otherHRP.Position).Magnitude
+				if dist < FLINGER_DISTANCE then
+					warn("Possible flinger detected: " .. player.Name)
+					game:GetService("StarterGui"):SetCore("SendNotification", {
+						Title = "Anti-Fling Alert",
+						Text = "Teleported due to possible fling by " .. player.Name,
+						Duration = 3
+					})
+				end
+			end
+		end
+	end
+end
+
+-- Collision control with suspected flingers
+local function updateCollision()
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			local otherHRP = player.Character.HumanoidRootPart
+			local distance = (otherHRP.Position - humanoidRootPart.Position).Magnitude
+
+			if distance <= FLINGER_DISTANCE then
+				local isSus = otherHRP.AssemblyLinearVelocity.Magnitude > FLING_SPEED_THRESHOLD
+				if isSus and not flingerList[player] then
+					flingerList[player] = true
+					for _, part in ipairs(player.Character:GetDescendants()) do
+						if part:IsA("BasePart") then
+							part.CanCollide = false
+						end
+					end
+				elseif not isSus and flingerList[player] then
+					flingerList[player] = nil
+					for _, part in ipairs(player.Character:GetDescendants()) do
+						if part:IsA("BasePart") then
+							part.CanCollide = true
+						end
+					end
+				end
+			elseif flingerList[player] then
+				flingerList[player] = nil
+				for _, part in ipairs(player.Character:GetDescendants()) do
+					if part:IsA("BasePart") then
+						part.CanCollide = true
+					end
+				end
+			end
+		end
+	end
+end
+
+-- Character load logic
+local function onCharacterAdded(char)
+	character = char
+	humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+
+	local lastSafeUpdate = 0
+	RunService.Heartbeat:Connect(function(dt)
+		if tick() - lastSafeUpdate >= SAFE_POSITION_SAVE_INTERVAL then
+			updateSafePosition()
+			lastSafeUpdate = tick()
+		end
+
+		updateCollision()
+		checkSelfFling()
+	end)
+end
+
+-- Init
+if LocalPlayer.Character then
+	onCharacterAdded(LocalPlayer.Character)
+end
+LocalPlayer.CharacterAdded:Connect(onCharacterAdded)
